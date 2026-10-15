@@ -88,6 +88,15 @@ and a layout problem before delivery.
 **Result:** `build_exe.bat` (PyInstaller) produces a single `KeithleyIV.exe` that needs no Python. Only the
 NI-488.2 driver is needed to talk to the instrument.
 
+## 10. First update (v1.1)
+
+Four requests in one message:
+1. *Move the Data tab back under the Sweep tab* → a **Saving** section in the Sweep tab, which scrolls on short screens.
+2. *A "stop without saving" button* → **Stop & discard** stops the measurement and deletes its data.
+3. *Outputs in a folder* → every measurement gets **its own folder** with its CSV and PNG inside.
+4. *A better naming convention, with options to choose from* → six **naming schemes** plus a custom pattern,
+   with a preview of the next name.
+
 ---
 
 ## Tips for building your own

@@ -89,9 +89,9 @@ def hint_for(e):
         return "\n\nHint: GPIB bus problem. Check the cable and that the 2400 is powered on."
     if isinstance(e, PermissionError):
         return ("\n\nHint: the data file could not be written. If it is open in Excel, "
-                "close it, or choose another folder in the Data tab.")
+                "close it, or choose another folder under Saving in the Sweep tab.")
     if isinstance(e, OSError) and "VI_" not in s:
-        return "\n\nHint: problem with the data folder — check it in the Data tab."
+        return "\n\nHint: problem with the data folder — check it under Saving in the Sweep tab."
     return ""
 
 
@@ -358,6 +358,84 @@ def fmt_clock(sec):
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
+# ============================================================================
+# File / folder naming
+# ============================================================================
+# (label shown in the app, pattern). Every measurement gets its own folder with this name,
+# containing <name>.csv and <name>.png.
+NAME_SCHEMES = [
+    ("Sample_Date_#", "{sample}_{date}_{n}"),
+    ("Sample_Type_Date_#", "{sample}_{type}_{date}_{n}"),
+    ("Date_Sample_#", "{date}_{sample}_{n}"),
+    ("Sample_Date_Time", "{sample}_{date}_{time}"),
+    ("Sample_Type_Range_Date_#", "{sample}_{type}_{range}_{date}_{n}"),
+    ("Sample_#", "{sample}_{n}"),
+    ("Custom pattern", None),
+]
+NAME_TOKENS = ("sample", "date", "time", "n", "type", "range")
+_BAD_CHARS = re.compile(r'[\\/:*?"<>|\s]+')
+
+
+def safe_part(text):
+    """Make text safe for a Windows file/folder name."""
+    return _BAD_CHARS.sub("_", str(text)).strip("._") or "x"
+
+
+def ascii_si(x, unit):
+    """Compact ASCII value for names: 0.02 → 20mV, 1e-6 → 1uA."""
+    return fmt_si(x, unit, 3).replace(" ", "").replace("µ", "u")
+
+
+def name_tokens(cfg, when):
+    u = "V" if cfg.get("mode", "voltage") == "voltage" else "A"
+    sh = cfg.get("shape", "")
+    if sh == CONST_SHAPE:
+        typ = "IT" if u == "V" else "VT"
+        rng = f"{ascii_si(cfg['level'], u)}_{fmt_dur(cfg['duration']).replace(' ', '')}" \
+            if "level" in cfg else "range"
+    else:
+        typ = "IVcyc" if sh == CYCLE_SHAPE else ("VI" if u == "A" else "IV")
+        if "start" in cfg:
+            rng = f"{ascii_si(cfg['start'], u)}_{ascii_si(cfg['stop'], u)}"
+            if sh == CYCLE_SHAPE:
+                rng += f"_x{cfg['cycles']}"
+        else:
+            rng = "range"
+    return dict(sample=safe_part(cfg.get("sample") or "sample"), date=when.strftime("%Y-%m-%d"),
+                time=when.strftime("%H-%M-%S"), type=typ, range=rng)
+
+
+def check_pattern(pattern):
+    """Raises ValueError with a readable message if the pattern can't be used."""
+    if not pattern or not pattern.strip():
+        raise ValueError("The name pattern is empty.")
+    try:
+        pattern.format(**{k: "x" for k in NAME_TOKENS})
+    except KeyError as e:
+        raise ValueError(f"Unknown item {{{e.args[0]}}} in the name pattern.\n"
+                         "Allowed: " + "  ".join("{%s}" % k for k in NAME_TOKENS))
+    except (ValueError, IndexError):
+        raise ValueError("The name pattern has unmatched { } brackets.")
+
+
+def next_name(parent, pattern, tokens):
+    """Next free name in `parent`. {n} counts up per name (001, 002, …), continuing after
+    the highest number already in the folder."""
+    check_pattern(pattern)
+    existing = set(os.listdir(parent)) if os.path.isdir(parent) else set()
+    if "{n}" in pattern:
+        marker = "\x00N\x00"
+        rendered = safe_part(pattern.format(**tokens, n=marker).replace(marker, "NUMBERHERE"))
+        rx = re.compile("^" + re.escape(rendered).replace("NUMBERHERE", r"(\d+)") + "$")
+        nums = [int(m.group(1)) for f in existing for m in [rx.match(f)] if m]
+        return rendered.replace("NUMBERHERE", f"{(max(nums) + 1) if nums else 1:03d}")
+    name = safe_part(pattern.format(**tokens))
+    out, k = name, 2
+    while out in existing:
+        out, k = f"{name}_{k}", k + 1
+    return out
+
+
 def axis_scale(values, unit):
     """Scale factor + unit label so the largest |value| is between 1 and 1000."""
     vals = [abs(v) for v in values if v is not None and math.isfinite(v)]
@@ -450,6 +528,8 @@ def csv_header(cfg, idn, started):
                  f"source range: {rng(c.get('src_range'))}, "
                  f"measure range: {rng(c.get('meas_range'))}, "
                  f"4-wire: {c['four_wire']}, terminals: {'rear' if c['rear'] else 'front'}")
+    if c.get("queue_note"):
+        lines.append(f"Queue: {c['queue_note']}")
     lines.append(f"source column is in {unit}; resistance_ohm = fit over the last "
                  f"{c['rfit']} points; compliance/over_range: 1 = yes; empty = no reading")
     return "".join(f"# {s}\n" for s in lines)
@@ -498,26 +578,86 @@ THEMES = {
     "dark": dict(
         bg="#1e1f22", panel="#2b2d31", field="#383a40", fg="#e3e5e8", muted="#8e9297",
         border="#45474d", accent="#4c8bf5", accent_hover="#3b78e7", btn="#3a3c42",
-        btn_hover="#46484f", ax_bg="#232428", grid="#4a4c52", fit="#e3e5e8",
+        btn_hover="#46484f", ax_bg="#232428", grid="#4a4c52", fit="#e3e5e8", danger="#ff7b72",
         lines=["#5b9bff", "#ff6b5b", "#3ecf8e", "#c38bff", "#ffb443", "#3fd0e6", "#bbbbbb"]),
     "light": dict(
         bg="#f0f1f3", panel="#ffffff", field="#ffffff", fg="#1f2328", muted="#6b7280",
         border="#c9ccd1", accent="#2a6fdb", accent_hover="#1f5dc0", btn="#e4e6ea",
-        btn_hover="#d6d9de", ax_bg="#ffffff", grid="#d0d3d8", fit="#1f2328",
+        btn_hover="#d6d9de", ax_bg="#ffffff", grid="#d0d3d8", fit="#1f2328", danger="#c62828",
         lines=["#2a6fdb", "#e0533d", "#2b9e6b", "#9b59b6", "#e69b00", "#17a2b8", "#555555"]),
 }
 PUB_COLORS = ["#000000", "#d62728", "#1f5bd6", "#2ca02c", "#9467bd", "#ff7f0e", "#8c564b"]
 PLOT_STYLES = ["Line + markers", "Line", "Scatter"]
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".keithley_iv_settings.json")
+APP_VERSION = "1.1"
 FORM_KEYS = ["mode", "shape", "start", "stop", "step", "comp", "cycles", "nplc", "delay",
              "rfit", "srange", "mrange", "4w", "rear", "stopcomp", "sample"]
+
+
+class ScrollFrame(ttk.Frame):
+    """A frame whose content scrolls vertically, with a scrollbar only when needed."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0)
+        self.vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.inner = ttk.Frame(self.canvas)
+        self._win = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.vbar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self._bar_shown = False
+        self.inner.bind("<Configure>", self._on_inner)
+        self.canvas.bind("<Configure>", self._on_canvas)
+        self.bind("<Enter>", lambda e: self._wheel(True))
+        self.bind("<Leave>", lambda e: self._wheel(False))
+
+    def set_bg(self, color):
+        self.canvas.configure(bg=color)
+
+    def _needs_bar(self):
+        return self.inner.winfo_reqheight() > self.canvas.winfo_height() + 1
+
+    def _on_inner(self, _e=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"),
+                              width=self.inner.winfo_reqwidth())
+        self._update_bar()
+
+    def _on_canvas(self, e):
+        self.canvas.itemconfigure(self._win, width=e.width)
+        self._update_bar()
+
+    def _update_bar(self):
+        need = self._needs_bar()
+        if need and not self._bar_shown:
+            self.vbar.pack(side="right", fill="y")
+            self._bar_shown = True
+        elif not need and self._bar_shown:
+            self.vbar.pack_forget()
+            self._bar_shown = False
+            self.canvas.yview_moveto(0)
+
+    def _wheel(self, on):
+        if on:
+            self.bind_all("<MouseWheel>", self._on_wheel)
+            self.bind_all("<Button-4>", lambda e: self._scroll(-1))
+            self.bind_all("<Button-5>", lambda e: self._scroll(1))
+        else:
+            for ev in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                self.unbind_all(ev)
+
+    def _on_wheel(self, e):
+        self._scroll(-1 if e.delta > 0 else 1)
+
+    def _scroll(self, d):
+        if self._needs_bar():
+            self.canvas.yview_scroll(d * 2, "units")
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Keithley 2400 I-V Sweep")
-        self.geometry("1280x860")
+        self.title(f"Keithley 2400 I-V Sweep  v{APP_VERSION}")
+        h = max(700, min(980, self.winfo_screenheight() - 100))
+        self.geometry(f"1280x{h}")
         self.minsize(1040, 700)
 
         self._last_err = ("", 0.0)
@@ -540,6 +680,7 @@ class App(tk.Tk):
         self._build_ui()
         self.apply_theme()
         self._on_mode_change()
+        self._on_name_change()
         self._q_refresh()
         self.refresh_resources()
         self.after(50, self._poll)
@@ -583,6 +724,9 @@ class App(tk.Tk):
         self.v_sample = S(value="sample1")
         self.v_folder = S(value=os.path.join(os.path.expanduser("~"), "IV_data"))
         self.v_autosave = B(value=True)
+        self.v_namescheme = S(value=NAME_SCHEMES[0][0])
+        self.v_namepat = S(value="{sample}_{date}_{n}")
+        self.v_nameprev = S(value="")
         self.v_scale = S(value="Linear")
         self.v_showfit = B(value=True)
         self.v_cyclecolor = B(value=True)
@@ -602,7 +746,7 @@ class App(tk.Tk):
             "resource", "simulate", "mode", "shape", "start", "stop", "step", "comp", "cycles",
             "nplc", "delay", "rfit", "srange", "mrange", "4w", "rear", "stopcomp", "sample",
             "folder", "autosave", "scale", "showfit", "cyclecolor", "dark", "pstyle", "lw", "ms",
-            "wait", "qrepeat"]}
+            "wait", "qrepeat", "namescheme", "namepat"]}
 
     def _load_settings(self):
         try:
@@ -662,14 +806,14 @@ class App(tk.Tk):
         self.nb.pack(fill="both", expand=True)
         tab_sweep = ttk.Frame(self.nb, padding=(0, 6, 0, 0))
         tab_queue = ttk.Frame(self.nb, padding=(0, 6, 0, 0))
-        tab_data = ttk.Frame(self.nb, padding=(0, 6, 0, 0))
         self.nb.add(tab_sweep, text="  Sweep  ")
         self.nb.add(tab_queue, text="  Queue  ")
-        self.nb.add(tab_data, text="  Data  ")
         self.tab_sweep = tab_sweep
-        self._build_sweep_tab(tab_sweep)
+        self.sweep_scroll = ScrollFrame(tab_sweep)     # scrolls only if the screen is too short
+        self.sweep_scroll.pack(fill="both", expand=True)
+        self._build_sweep_tab(self.sweep_scroll.inner)
+        self._build_saving(self.sweep_scroll.inner)
         self._build_queue_tab(tab_queue)
-        self._build_data_tab(tab_data)
 
         # --- Sample + run buttons (always visible)
         bot = ttk.Frame(left, padding=(0, 6, 0, 0))
@@ -682,8 +826,13 @@ class App(tk.Tk):
         self.btn_start = ttk.Button(bot, text="▶  Start", style="Accent.TButton",
                                     command=self.start)
         self.btn_start.pack(fill="x", ipady=4)
-        self.btn_stop = ttk.Button(bot, text="■  Stop", command=self.stop, state="disabled")
-        self.btn_stop.pack(fill="x", pady=(4, 0), ipady=2)
+        sr = ttk.Frame(bot)
+        sr.pack(fill="x", pady=(4, 0))
+        self.btn_stop = ttk.Button(sr, text="■  Stop (keep data)", command=self.stop, state="disabled")
+        self.btn_stop.pack(side="left", fill="x", expand=True, ipady=2)
+        self.btn_discard = ttk.Button(sr, text="✕  Stop & discard", style="Danger.TButton",
+                                      command=self.stop_discard, state="disabled")
+        self.btn_discard.pack(side="left", fill="x", expand=True, padx=(4, 0), ipady=2)
         bb = ttk.Frame(bot)
         bb.pack(fill="x", pady=(8, 0))
         b1 = ttk.Button(bb, text="Save last as…", command=self.save_as)
@@ -754,11 +903,11 @@ class App(tk.Tk):
         ttk.Label(sw, text="Mode").grid(row=0, column=0, sticky="w")
         cb = ttk.Combobox(sw, textvariable=self.v_mode, state="readonly", width=20,
                           values=["Source V, measure I", "Source I, measure V"])
-        cb.grid(row=0, column=1, sticky="ew", pady=2)
+        cb.grid(row=0, column=1, sticky="ew", pady=1)
         cb.bind("<<ComboboxSelected>>", lambda e: self._on_mode_change())
         ttk.Label(sw, text="Shape").grid(row=1, column=0, sticky="w")
         cs = ttk.Combobox(sw, textvariable=self.v_shape, state="readonly", width=20, values=SHAPES)
-        cs.grid(row=1, column=1, sticky="ew", pady=2)
+        cs.grid(row=1, column=1, sticky="ew", pady=1)
         cs.bind("<<ComboboxSelected>>", lambda e: self._on_mode_change())
         self.locked += [cb, cs]
         self.lbl_start = ttk.Label(sw, text="Start")
@@ -774,7 +923,7 @@ class App(tk.Tk):
                                         (self.lbl_comp, self.v_comp)], start=2):
             lbl.grid(row=r, column=0, sticky="w", padx=(0, 6))
             e = ttk.Entry(sw, textvariable=var, width=20)
-            e.grid(row=r, column=1, sticky="ew", pady=2)
+            e.grid(row=r, column=1, sticky="ew", pady=1)
             self.entries[str(var)] = e
         self.lbl_hint = ttk.Label(sw, text="", style="Muted.TLabel", wraplength=250)
         self.lbl_hint.grid(row=7, column=0, columnspan=2, sticky="w")
@@ -783,27 +932,27 @@ class App(tk.Tk):
         me = ttk.LabelFrame(tab, text="Measurement", padding=6)
         me.pack(fill="x", pady=(0, 6))
         ttk.Label(me, text="NPLC (0.01–10)").grid(row=0, column=0, sticky="w")
-        ttk.Entry(me, textvariable=self.v_nplc, width=12).grid(row=0, column=1, sticky="ew", pady=2)
+        ttk.Entry(me, textvariable=self.v_nplc, width=12).grid(row=0, column=1, sticky="ew", pady=1)
         self.lbl_delay = ttk.Label(me, text="Delay per point (s)")
         self.lbl_delay.grid(row=1, column=0, sticky="w")
-        ttk.Entry(me, textvariable=self.v_delay, width=12).grid(row=1, column=1, sticky="ew", pady=2)
+        ttk.Entry(me, textvariable=self.v_delay, width=12).grid(row=1, column=1, sticky="ew", pady=1)
         ttk.Label(me, text="R from last N points").grid(row=2, column=0, sticky="w")
-        ttk.Entry(me, textvariable=self.v_rfit, width=12).grid(row=2, column=1, sticky="ew", pady=2)
+        ttk.Entry(me, textvariable=self.v_rfit, width=12).grid(row=2, column=1, sticky="ew", pady=1)
         self.lbl_srange = ttk.Label(me, text="Source range")
         self.lbl_srange.grid(row=3, column=0, sticky="w")
         self.cb_srange = ttk.Combobox(me, textvariable=self.v_srange, state="readonly", width=10)
-        self.cb_srange.grid(row=3, column=1, sticky="ew", pady=2)
+        self.cb_srange.grid(row=3, column=1, sticky="ew", pady=1)
         self.lbl_mrange = ttk.Label(me, text="Measure range")
         self.lbl_mrange.grid(row=4, column=0, sticky="w")
         self.cb_mrange = ttk.Combobox(me, textvariable=self.v_mrange, state="readonly", width=10)
-        self.cb_mrange.grid(row=4, column=1, sticky="ew", pady=2)
+        self.cb_mrange.grid(row=4, column=1, sticky="ew", pady=1)
         self.locked += [self.cb_srange, self.cb_mrange]
-        ttk.Checkbutton(me, text="4-wire (remote sense)", variable=self.v_4w).grid(
-            row=5, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(me, text="4-wire", variable=self.v_4w).grid(
+            row=5, column=0, sticky="w", pady=(2, 0))
         ttk.Checkbutton(me, text="Rear terminals", variable=self.v_rear).grid(
-            row=6, column=0, columnspan=2, sticky="w")
+            row=5, column=1, sticky="w", pady=(2, 0))
         ttk.Checkbutton(me, text="Stop at compliance", variable=self.v_stopcomp).grid(
-            row=7, column=0, columnspan=2, sticky="w")
+            row=6, column=0, columnspan=2, sticky="w")
         me.columnconfigure(1, weight=1)
 
     def _build_queue_tab(self, tab):
@@ -856,24 +1005,37 @@ class App(tk.Tk):
                            "The output is OFF during waits.",
                   style="Muted.TLabel", wraplength=255).pack(anchor="w", pady=(6, 0))
 
-    def _build_data_tab(self, tab):
+    def _build_saving(self, tab):
         da = ttk.LabelFrame(tab, text="Saving", padding=6)
-        da.pack(fill="x")
+        da.pack(fill="x", pady=(0, 6))
         ttk.Label(da, text="Folder").grid(row=0, column=0, sticky="w")
         ff = ttk.Frame(da)
-        ff.grid(row=0, column=1, sticky="ew", pady=2)
-        ttk.Entry(ff, textvariable=self.v_folder, width=18).pack(side="left", fill="x", expand=True)
+        ff.grid(row=0, column=1, sticky="ew", pady=1)
+        ttk.Entry(ff, textvariable=self.v_folder, width=12).pack(side="left", fill="x", expand=True)
         ttk.Button(ff, text="…", width=3, command=self._browse).pack(side="left", padx=(2, 0))
+        ttk.Button(ff, text="Open", width=5, command=self._open_folder).pack(side="left", padx=(2, 0))
+        ttk.Label(da, text="Names").grid(row=1, column=0, sticky="w")
+        cbn = ttk.Combobox(da, textvariable=self.v_namescheme, state="readonly", width=20,
+                           values=[lbl for lbl, _ in NAME_SCHEMES])
+        cbn.grid(row=1, column=1, sticky="ew", pady=1)
+        cbn.bind("<<ComboboxSelected>>", lambda e: self._on_name_change())
+        self.ent_namepat = ttk.Entry(da, textvariable=self.v_namepat)
+        self.ent_namepat.grid(row=2, column=1, sticky="ew", pady=1)
+        self.lbl_pat = ttk.Label(da, text="Pattern")
+        self.lbl_pat.grid(row=2, column=0, sticky="w")
+        self.lbl_tokens = ttk.Label(da, text="{sample} {date} {time} {n} {type} {range}",
+                                    style="Muted.TLabel", wraplength=255)
+        self.lbl_tokens.grid(row=3, column=0, columnspan=2, sticky="w")
+        ttk.Label(da, textvariable=self.v_nameprev, style="Muted.TLabel", wraplength=255).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(2, 0))
         ttk.Checkbutton(da, text="Auto-save (live CSV + PNG at the end)",
-                        variable=self.v_autosave).grid(row=1, column=0, columnspan=2, sticky="w",
+                        variable=self.v_autosave).grid(row=5, column=0, columnspan=2, sticky="w",
                                                        pady=(4, 0))
-        ttk.Label(da, text="Every point is written to the CSV as soon as it is measured, so "
-                           "nothing is lost if the PC or the app crashes.",
-                  style="Muted.TLabel", wraplength=255).grid(row=2, column=0, columnspan=2,
-                                                            sticky="w", pady=(4, 0))
-        ttk.Button(da, text="Open data folder", command=self._open_folder).grid(
-            row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         da.columnconfigure(1, weight=1)
+        self.locked += [cbn, self.ent_namepat]
+        for v in (self.v_sample, self.v_folder, self.v_namepat, self.v_shape, self.v_mode,
+                  self.v_start, self.v_stop, self.v_cycles):
+            v.trace_add("write", lambda *a: self._schedule_preview())
 
     # ---------------------------------------------------------------- theme
     @property
@@ -896,6 +1058,11 @@ class App(tk.Tk):
                     focuscolor=t["btn"], padding=(8, 3))
         s.map("TButton", background=[("disabled", t["bg"]), ("pressed", t["btn_hover"]),
                                      ("active", t["btn_hover"])],
+              foreground=[("disabled", t["muted"])])
+        s.configure("Danger.TButton", background=t["btn"], foreground=t["danger"],
+                    bordercolor=t["border"], focuscolor=t["btn"], padding=(8, 3))
+        s.map("Danger.TButton", background=[("disabled", t["bg"]), ("pressed", t["btn_hover"]),
+                                            ("active", t["btn_hover"])],
               foreground=[("disabled", t["muted"])])
         s.configure("Accent.TButton", background=t["accent"], foreground="#ffffff",
                     focuscolor=t["accent"], font=("Segoe UI", 10, "bold"))
@@ -934,6 +1101,7 @@ class App(tk.Tk):
         s.configure("Muted.TLabel", foreground=t["muted"])
         s.configure("Fit.TLabel", foreground=t["fg"], font=("Segoe UI", 10))
         s.configure("Status.TLabel", background=t["panel"], foreground=t["muted"])
+        self.sweep_scroll.set_bg(t["bg"])
         self.q_list.configure(bg=t["field"], fg=t["fg"], selectbackground=t["accent"],
                               selectforeground="#ffffff", highlightthickness=1,
                               highlightbackground=t["border"], highlightcolor=t["accent"],
@@ -1201,10 +1369,13 @@ class App(tk.Tk):
             self.entries[str(self.v_step)].config(state="disabled" if const else "normal")
             self.entries[str(self.v_cycles)].config(state="normal" if cyc else "disabled")
         self.lbl_delay.config(text="Interval between points (s)" if const else "Delay per point (s)")
-        self.lbl_hint.config(text={CYCLE_SHAPE: "Each cycle: 0 → max → min → 0",
-                                   CONST_SHAPE: "Holds the source constant and records vs time. "
-                                                "Duration: e.g. 60, 10 min, 2 h — 0 = until Stop."
-                                   }.get(shape, ""))
+        hint = {CYCLE_SHAPE: "Each cycle: 0 → max → min → 0",
+                CONST_SHAPE: "Duration e.g. 60, 10 min, 2 h (0 = until Stop)"}.get(shape, "")
+        self.lbl_hint.config(text=hint)
+        if hint:
+            self.lbl_hint.grid()
+        else:
+            self.lbl_hint.grid_remove()
         srcs, meas = (V_RANGES, I_RANGES) if src_v else (I_RANGES, V_RANGES)
         self.cb_srange["values"] = srcs
         self.cb_mrange["values"] = meas
@@ -1360,6 +1531,7 @@ class App(tk.Tk):
             except tk.TclError:
                 pass
         self.btn_stop.config(state="normal" if running else "disabled")
+        self.btn_discard.config(state="normal" if running else "disabled")
         if not running:
             self._on_mode_change()
 
@@ -1377,26 +1549,129 @@ class App(tk.Tk):
         self.stop_evt.set()
         self.v_status.set("Stopping…")
 
-    def _new_base(self, cfg, kind, tag=""):
-        folder = self.v_folder.get() or os.getcwd()
-        os.makedirs(folder, exist_ok=True)
-        stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        name = re.sub(r'[\\/:*?"<>|]+', "_", cfg["sample"]).replace(" ", "_")
-        base = os.path.join(folder, f"{'IT' if kind == 'time' else 'IV'}_{name}_{stamp}"
-                                    + (f"_{tag}" if tag else ""))
-        out, k = base, 2
-        while os.path.exists(out + ".csv"):
-            out, k = f"{base}_{k}", k + 1
-        return out
+    def stop_discard(self):
+        """Stop now and delete the files of the measurement that is running."""
+        if not self.busy:
+            return
+        running = self.worker is not None and self.worker.is_alive()
+        if not running:                      # a queue wait step: nothing to discard
+            self.stop()
+            return
+        run = self.runs[-1] if self.runs else None
+        msg = "Stop now and delete the data of the current measurement?"
+        if self.seq_state is not None:
+            msg += "\n\nThe queue stops too. Measurements already finished are kept."
+        if not messagebox.askyesno("Stop & discard", msg, icon="warning", parent=self):
+            return
+        if run is None:
+            return
+        if self.worker is not None and self.worker.is_alive() and self.runs and self.runs[-1] is run:
+            run["discard"] = True            # handled when the run has stopped
+            self.stop()
+            self.v_status.set("Stopping and discarding…")
+        else:                                # it finished while the dialog was open
+            self._discard_run(run)
+            if self.seq_state is not None:
+                self.stop()
 
-    def _launch(self, cfg, save, tag="", note=""):
+    def _discard_run(self, run):
+        """Delete the files this run wrote and remove it from the plot."""
+        removed = False
+        if run.get("base"):
+            for ext in (".csv", ".png"):
+                try:
+                    os.remove(run["base"] + ext)
+                    removed = True
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    log.error("Could not delete %s:\n%s", run["base"] + ext, traceback.format_exc())
+            try:
+                os.rmdir(run["dir"])         # only removes the folder if it is now empty
+            except OSError:
+                pass
+        if run in self.runs:
+            self.runs.remove(run)
+            for art in [run["line"], *run.get("cyc_lines", {}).values()]:
+                try:
+                    art.remove()
+                except Exception:
+                    pass
+        for v in (self.v_readV, self.v_readI, self.v_readR):
+            v.set("—")
+        self.v_points.set("0 / 0")
+        self.pbar["value"] = 0
+        self._redraw()
+        self.v_status.set("Measurement discarded — its data were deleted" if removed
+                          else "Measurement discarded")
+        self._update_preview()
+
+    # ---------------------------------------------------------------- names / folders
+    def _pattern(self):
+        lbl = self.v_namescheme.get()
+        for l, pat in NAME_SCHEMES:
+            if l == lbl:
+                return pat if pat is not None else self.v_namepat.get()
+        return NAME_SCHEMES[0][1]
+
+    def _on_name_change(self):
+        custom = self._pattern_is_custom()
+        if not self.busy:
+            self.ent_namepat.config(state="normal" if custom else "disabled")
+        if custom:
+            self.lbl_pat.grid()
+            self.ent_namepat.grid()
+            self.lbl_tokens.grid()
+        else:
+            self.lbl_pat.grid_remove()
+            self.ent_namepat.grid_remove()
+            self.lbl_tokens.grid_remove()
+        self._update_preview()
+
+    def _pattern_is_custom(self):
+        return dict(NAME_SCHEMES).get(self.v_namescheme.get(), "") is None
+
+    def _schedule_preview(self):
+        if getattr(self, "_prev_job", None):
+            self.after_cancel(self._prev_job)
+        self._prev_job = self.after(250, self._update_preview)
+
+    def _update_preview(self):
+        self._prev_job = None
+        try:
+            cfg = self._read_cfg()
+        except Exception:
+            cfg = dict(sample=self.v_sample.get(), shape=self.v_shape.get(),
+                       mode="voltage" if self._src_is_v() else "current")
+        try:
+            parent = self.v_folder.get() or os.getcwd()
+            name = next_name(parent, self._pattern(), name_tokens(cfg, dt.datetime.now()))
+            self.v_nameprev.set(f"Next folder: {name}")
+        except ValueError as e:
+            self.v_nameprev.set(f"⚠ {str(e).splitlines()[0]}")
+        except Exception:
+            self.v_nameprev.set("")
+
+    def _new_base(self, cfg, parent=None):
+        """Create <parent>/<name>/ and return (folder, folder/<name>) for the files."""
+        parent = parent or self.v_folder.get() or os.getcwd()
+        os.makedirs(parent, exist_ok=True)
+        name = next_name(parent, self._pattern(), name_tokens(cfg, dt.datetime.now()))
+        folder = os.path.join(parent, name)
+        os.makedirs(folder)
+        return folder, os.path.join(folder, name)
+
+    def _launch(self, cfg, save, parent=None, note=""):
         """Start one measurement (sweep or constant). Returns False if it could not start."""
         const = cfg["shape"] == CONST_SHAPE
         kind = "time" if const else "iv"
-        base = None
+        base = folder = None
         if save:
             try:
-                base = self._new_base(cfg, kind, tag)
+                folder, base = self._new_base(cfg, parent)
+            except ValueError as e:
+                messagebox.showerror("File names", str(e), parent=self)
+                return False
             except Exception as e:
                 log.error("Could not prepare data folder:\n%s", traceback.format_exc())
                 messagebox.showerror("Data folder", f"Could not use the data folder:\n{e}", parent=self)
@@ -1419,7 +1694,8 @@ class App(tk.Tk):
         line, = self.ax.plot([], [], label=label)
         started = dt.datetime.now()
         self.runs.append(dict(idx=idx, kind=kind, src_v=cfg["mode"] == "voltage", label=label,
-                              rows=[], line=line, cfg=cfg, idn="", started=started, base=base))
+                              rows=[], line=line, cfg=cfg, idn="", started=started, base=base,
+                              dir=folder))
 
         self.pbar.stop()
         if const and cfg["duration"] > 0:
@@ -1671,8 +1947,15 @@ class App(tk.Tk):
             messagebox.showerror("Invalid setting", str(e), parent=self)
             return
         self._save_settings()
+        base_dir = self.v_folder.get() or os.getcwd()
+        qdir = os.path.join(base_dir, "Queue_" + dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+        try:
+            os.makedirs(qdir, exist_ok=True)
+        except Exception as e:
+            messagebox.showerror("Data folder", f"Could not create the queue folder:\n{e}", parent=self)
+            return
         self.seq_state = dict(pos=0, round=1, rounds=int(reps), runs=0, warnings=[],
-                              folder=self.v_folder.get())
+                              folder=qdir)
         self._set_running(True)
         self._seq_next()
 
@@ -1695,17 +1978,18 @@ class App(tk.Tk):
         if step["type"] == "wait":
             self._seq_wait(step["seconds"], note)
             return
-        tag = f"q{st['pos'] + 1:02d}" + (f"_r{st['round']}" if st["rounds"] > 1 else "")
         cfg = dict(step["cfg"])
         cfg["resource"] = self.v_resource.get().strip()      # use the current connection
         cfg["simulate"] = self.v_simulate.get()
-        if not self._launch(cfg, save=True, tag=tag, note=note):
+        cfg["queue_note"] = note
+        if not self._launch(cfg, save=True, parent=st["folder"], note=note):
             self._seq_end("Queue stopped — could not start a step")
 
     def _seq_after_run(self, outcome):
         st = self.seq_state
         if outcome.get("stopped"):
-            self._seq_end("Queue stopped by user")
+            self._seq_end("Queue stopped — last measurement discarded" if st.get("discarded")
+                          else "Queue stopped by user")
         elif not outcome.get("ok"):
             self._seq_end("Queue stopped because of an error")
         else:
@@ -1747,8 +2031,13 @@ class App(tk.Tk):
         self._set_running(False)
         self.q_list.selection_clear(0, "end")
         if st:
-            msg += f" — {st['runs']} run(s) saved in {st['folder']}"
+            try:
+                os.rmdir(st["folder"])               # remove the queue folder if nothing was saved
+                msg += " — nothing was saved"
+            except OSError:
+                msg += f" — {st['runs']} run(s) saved in {st['folder']}"
         self.v_status.set(msg)
+        self._update_preview()
         self.bell()
         if st and st["warnings"]:
             messagebox.showwarning("Queue warnings", "\n\n".join(st["warnings"][:5]), parent=self)
@@ -1808,6 +2097,11 @@ class App(tk.Tk):
         self.pbar.stop()
         self.pbar.config(mode="determinate")
         run = self.runs[-1] if self.runs else None
+        if run and run.get("discard"):
+            self._discard_run(run)
+            run = None
+            if self.seq_state is not None:
+                self.seq_state["discarded"] = True
         if run and run["rows"]:
             self._redraw()
             n_comp = sum(r[5] for r in run["rows"])
@@ -1827,6 +2121,7 @@ class App(tk.Tk):
             self._seq_after_run(outcome)
         else:
             self._set_running(False)
+            self._update_preview()
 
     # ---------------------------------------------------------------- saving
     def _save_png(self, run, path):
@@ -1893,11 +2188,14 @@ class App(tk.Tk):
             messagebox.showinfo("Nothing to save", "Run a measurement first.", parent=self)
             return
         run = self.runs[-1]
-        tag = "IT" if run["kind"] == "time" else "IV"
+        try:
+            suggested = next_name(self.v_folder.get() or os.getcwd(), self._pattern(),
+                                  name_tokens(run["cfg"], run["started"]))
+        except Exception:
+            suggested = safe_part(run["cfg"]["sample"]) + run["started"].strftime("_%Y-%m-%d_%H-%M-%S")
         path = filedialog.asksaveasfilename(
             defaultextension=".csv", filetypes=[("CSV", "*.csv")],
-            initialdir=self.v_folder.get(),
-            initialfile=f"{tag}_{run['cfg']['sample']}_{run['started']:%Y%m%d_%H%M%S}.csv")
+            initialdir=self.v_folder.get(), initialfile=suggested + ".csv")
         if path:
             try:
                 self._write_csv(run, path)

@@ -14,6 +14,8 @@ publication-ready figures.
 - **Fixed or auto range** for both source and measurement
 - **Queue:** chain sweeps, constant-bias steps and waits, and repeat the whole queue
 - **Live saving:** every point is written to the CSV as it is measured. Nothing is lost if the PC crashes
+- **One folder per measurement**, with a choice of naming schemes (or your own pattern)
+- **Stop & discard:** stop a measurement and delete its data in one click
 - **Plot options:** line / scatter / both, line width, marker size, linear / log |y| / log-log, colour by cycle, dark or light theme
 - **Publication-style PNG** with automatic SI units (mV, µA, …):
 
@@ -54,12 +56,42 @@ measure range, the 2400 limits at the range value.
 
 **Queue.** Set up a measurement in the Sweep tab, then in the Queue tab click
 *Add current Sweep-tab settings*. Add waits between steps if needed, and set *Repeat*. Double-click a step to
-load its settings back for editing. Queue results are always saved, as `..._q01_r2.csv` (step 1, round 2).
+load its settings back for editing. Queue results are always saved, in their own `Queue_<date>_<time>` folder.
+
+**Stopping.** *Stop (keep data)* ends the measurement and saves what was measured. *Stop & discard* ends it
+and deletes its data. In a queue, it stops the queue and deletes only the measurement that was running.
 
 ## Data files
 
-Saved in the folder set in the **Data** tab (default `~/IV_data`) as `IV_<sample>_<date>_<time>.csv`
-(sweeps) or `IT_...csv` (constant source vs time), each with a matching `.png`.
+Each measurement gets its own folder inside the data folder (**Saving** section of the Sweep tab,
+default `~/IV_data`), containing `<name>.csv` and `<name>.png`. Queue runs go into a `Queue_<date>_<time>` folder:
+
+```
+IV_data/
+├── sample1_2026-10-15_001/
+│   ├── sample1_2026-10-15_001.csv
+│   └── sample1_2026-10-15_001.png
+├── sample1_2026-10-15_002/
+└── Queue_2026-10-15_14-30-00/
+    ├── sample1_2026-10-15_001/
+    └── sample1_2026-10-15_002/
+```
+
+**Naming schemes** (chosen under *Names*; the next name is previewed in the app):
+
+| scheme | example |
+|---|---|
+| Sample_Date_# | `sample1_2026-10-15_001` |
+| Sample_Type_Date_# | `sample1_IV_2026-10-15_001` |
+| Date_Sample_# | `2026-10-15_sample1_001` (sorts by date) |
+| Sample_Date_Time | `sample1_2026-10-15_14-32-05` |
+| Sample_Type_Range_Date_# | `sample1_IV_-20mV_20mV_2026-10-15_001` |
+| Sample_# | `sample1_001` |
+| Custom pattern | any mix of `{sample}` `{date}` `{time}` `{n}` `{type}` `{range}` |
+
+`#` / `{n}` counts up per name (001, 002, …). `{type}` is `IV` (voltage sweep), `VI` (current sweep),
+`IVcyc` (cycles), `IT` / `VT` (constant source vs time). `{range}` is the sweep range, for example `-20mV_20mV`,
+`1V_-1V_x3` (cycles) or `10mV_10min` (constant).
 
 Header lines start with `#` and record the instrument, date, sample and all settings. Columns:
 
