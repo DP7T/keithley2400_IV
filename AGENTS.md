@@ -11,9 +11,8 @@ measurements with a **Keithley 2400 SourceMeter** over GPIB, through an **NI GPI
 (default address `GPIB0::24::INSTR`). It needs the NI-488.2 driver. It is distributed as a single
 `KeithleyIV.exe` (PyInstaller onefile) through GitHub releases.
 
-The user is a physicist who runs the app on a lab PC and is not a programmer. They work from an iPhone,
-a Mac and the Windows lab PC, test each version on the real instrument, and report back with
-screenshots. Write in plain language for them. Keep the GUI simple.
+The maintainer is a physicist, not a programmer, who tests each version on the real instrument and
+reports back with screenshots. Write in plain language. Keep the GUI simple.
 
 ## Files
 
@@ -155,36 +154,27 @@ follow this order. **Only append new columns at the end**, so the user's analysi
 1. Bump `APP_VERSION` in `keithley2400_gui.pyw`, and add a section to `HOW_IT_WAS_BUILT.md` for the requests.
 2. Push to `main`. The workflow builds the exe as an artifact (Actions tab), which can be tested before
    release.
-3. The **user** publishes the GitHub release:
+3. The **maintainer** publishes the GitHub release:
    - Releases → Draft a new release → tag `vX.Y`, **Create new tag on publish**, target `main`.
    - The workflow attaches `KeithleyIV.exe` in about 5 minutes.
    - The download link is `https://github.com/DP7T/keithley2400_IV/releases/latest`.
 4. Updating on a PC = replacing the exe. There is nothing to uninstall; settings and data stay.
 
-The assistant's session could push to `main` but could **not** create or move tags or releases (HTTP 403).
-Ask the user to publish releases. Because tags can't be moved from the session, any history rewrite
-leaves the old release tag pointing to the old commit, and the user then has to delete and re-create the
-tag and release.
+Releases are published by the maintainer on GitHub.
 
-## Working with the user (privacy and history)
+## Commits and collaboration
 
-- **Commit as** `DP7T <342493853+DP7T@users.noreply.github.com>`. Never use or publish the user's
-  personal email.
-- **Commit messages:** a short, plain summary. The user allows exactly one attribution line:
-  `Co-Authored-By: Claude <noreply@anthropic.com>`.
-  **Never** add session links, conversation IDs or any other session-related information to commits,
-  files or anything public.
-- The user wants a **clean public history**. The repository was re-created once to remove old commits.
-  - Do not force-push or rewrite history without asking: it leaves "force pushed" traces in the activity
-    log, and the release tag can't be moved from the session.
-  - Normal new commits for additions are fine.
+- **Commit as** `DP7T <342493853+DP7T@users.noreply.github.com>`.
+- **Commit messages:** a short, plain summary. AI-assisted commits may add one line:
+  `Co-Authored-By: Claude <noreply@anthropic.com>`. Don't put links or IDs from assistant sessions
+  in commits or files.
+- Add new commits; don't rewrite or force-push published history.
 - Keep changes small and testable. Ask before changing the conventions above.
-- Explain errors and setup steps in plain words. The user sends photos and screenshots.
+- Explain errors and setup steps in plain words.
 
 ## Status
 
 - **v1.0:** first release. Sweeps, cycles, constant mode, queue, live saving, fixed ranges, R/R² fit,
   log-log, publication PNG, error reporting, exe build.
 - **v1.1:** Saving section moved into the Sweep tab, Stop & discard, one folder per measurement,
-  naming schemes. Tested in simulation (real window, headless); the user still has to publish the
-  release and test it on the instrument.
+  naming schemes. Tested in simulation (real window, headless); to be tested on the instrument.
